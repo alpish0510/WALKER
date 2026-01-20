@@ -1,1 +1,1 @@
-# E2E-Affine-Invariant-Ensemble-Sampler
+# WALKER:Weighted Affine Likelihood Kernel for Ensemble Randomization
