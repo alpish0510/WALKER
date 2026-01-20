@@ -1,23 +1,128 @@
+"""
+WALKER: Weighted Affine Likelihood Kernel for Ensemble Randomization
+
+This module implements a minimal affine-invariant ensemble MCMC sampler
+using stretch moves, along with a lightweight Bayesian parameter
+estimation framework.
+
+The design philosophy is:
+- explicit state (walkers and log-probabilities)
+- no hidden adaptation or heuristics
+- clear separation between probability definition, sampling dynamics,
+  and posterior analysis
+
+The sampler operates on an ensemble of walkers and requires only a
+callable log-posterior function.
+"""
+
+
+
 import numpy as np
 
 
 def z_sample(a=2.0):
+    """
+    Draw a stretch-move scale factor.
+
+    Samples the stretch variable `z` from the distribution
+
+        g(z) ∝ 1 / sqrt(z),   z ∈ [1/a, a]
+
+    as required by the affine-invariant ensemble sampler.
+
+    Parameters
+    ----------
+    a : float, optional
+        Stretch scale parameter controlling proposal size.
+        Must satisfy a > 1.
+
+    Returns
+    -------
+    z : float
+        Random stretch factor.
+    """
     u=np.random.rand()
     z=((a-1)*u+1)**2/a
     return z
 
 def propose_stretch(theta_i, theta_j, z):
     """
-    Propose a new position for theta_i using theta_j as reference.
+    Generate a stretch-move proposal for a single walker.
+
+    The proposal is constructed as
+
+        x' = x_j + z * (x_i - x_j)
+
+    where `x_j` is a randomly chosen complementary walker.
+
+    Parameters
+    ----------
+    x_i : ndarray, shape (n_dim,)
+        Current position of the walker being updated.
+    x_j : ndarray, shape (n_dim,)
+        Position of the complementary walker.
+    z : float
+        Stretch factor drawn from the stretch distribution.
+
+    Returns
+    -------
+    proposal : ndarray, shape (n_dim,)
+        Proposed new position for the walker.
     """
     return theta_j + z * (theta_i - theta_j)
 
-def accept_move(logp_old, logp_new, z, n_dim):    
+def accept_move(logp_old, logp_new, z, n_dim): 
+    """
+    Decide whether to accept a stretch-move proposal.
+
+    Acceptance probability follows the affine-invariant rule:
+
+        min(1, z^(n_dim - 1) * exp(logp_new - logp_old))
+
+    Parameters
+    ----------
+    logp_old : float
+        Log-posterior value at the current position.
+    logp_new : float
+        Log-posterior value at the proposed position.
+    z : float
+        Stretch factor used in the proposal.
+    n_dim : int
+        Dimensionality of parameter space.
+
+    Returns
+    -------
+    accept : bool
+        True if the proposal is accepted, False otherwise.
+    """   
     log_alpha = (n_dim - 1) * np.log(z) + logp_new - logp_old
     return np.log(np.random.rand()) < log_alpha
 
 
 def ensemble_step(walkers, logp, log_prob, a):
+    """
+    Perform one affine-invariant ensemble update step.
+
+    The ensemble is randomly split into two complementary subsets.
+    Each subset is updated conditionally on the other using stretch
+    moves. Updates are performed in place.
+
+    Parameters
+    ----------
+    walkers : ndarray, shape (n_walkers, n_dim)
+        Current positions of all walkers.
+    logp : ndarray, shape (n_walkers,)
+        Log-posterior values corresponding to `walkers`.
+        Updated in place.
+    log_prob : callable
+        Function computing log-posterior given a parameter vector.
+    a : float
+        Stretch scale parameter.
+
+    Notes
+    -----
+    This function mutates `walkers` and `logp` in place.
+    """
     n_walkers, n_dim = walkers.shape
 
     # shuffle and split
@@ -53,20 +158,35 @@ def ensemble_step(walkers, logp, log_prob, a):
 
 def run_sampler(walkers, logp, log_prob, n_steps, a=2.0):
     """
-    Run affine-invariant ensemble sampler.
+    Run an affine-invariant ensemble MCMC simulation.
+
+    Repeatedly applies ensemble stretch-move updates and records the
+    full chain of walker positions and log-posterior values.
 
     Parameters
     ----------
     walkers : ndarray, shape (n_walkers, n_dim)
+        Initial walker positions. Updated in place.
     logp : ndarray, shape (n_walkers,)
+        Initial log-posterior values. Updated in place.
     log_prob : callable
+        Function computing log-posterior given a parameter vector.
     n_steps : int
-    a : float
+        Number of MCMC steps to run.
+    a : float, optional
+        Stretch scale parameter.
 
     Returns
     -------
     chain : ndarray, shape (n_steps, n_walkers, n_dim)
+        Recorded walker positions at each step.
     logp_chain : ndarray, shape (n_steps, n_walkers)
+        Recorded log-posterior values at each step.
+
+    Notes
+    -----
+    This function does not perform burn-in removal, thinning, or
+    convergence diagnostics.
     """
     n_walkers, n_dim = walkers.shape
 
@@ -83,6 +203,18 @@ def run_sampler(walkers, logp, log_prob, n_steps, a=2.0):
 
 
 class ParamEstimator:
+    """
+    Bayesian parameter estimation problem definition.
+
+    This class encapsulates:
+    - observed data
+    - a forward model
+    - a prior distribution
+    - likelihood and posterior evaluation
+
+    It is agnostic to the sampling algorithm used to explore the
+    posterior.
+    """
     def __init__(self, x, y, yerr, model, log_prior):
         self.x = np.asarray(x)
         self.y = np.asarray(y)
@@ -92,7 +224,21 @@ class ParamEstimator:
         self.log_prior = log_prior  # log p(theta)
 
     def log_likelihood(self, theta):
-        "This function computes the log likelihood (p(y|theta)) given some data and model"
+        """
+        Compute the log-likelihood of the data given model parameters.
+
+        Assumes independent Gaussian observational uncertainties.
+
+        Parameters
+        ----------
+        theta : ndarray, shape (n_dim,)
+            Model parameters.
+
+        Returns
+        -------
+        log_like : float
+            Log-likelihood log p(y | theta).
+        """
         y_model = self.model(self.x, theta)
         resid = self.y - y_model
 
@@ -102,7 +248,22 @@ class ParamEstimator:
         )
 
     def log_posterior(self, theta):
-        "This function computes the log posterior (p(theta|y)) given the prior and the likelihood"
+        """
+        Compute the log-posterior probability of model parameters.
+
+        Combines the user-defined prior with the Gaussian likelihood.
+
+        Parameters
+        ----------
+        theta : ndarray, shape (n_dim,)
+            Model parameters.
+
+        Returns
+        -------
+        log_post : float
+            Log-posterior log p(theta | y).
+            Returns -inf for invalid prior values.
+        """
         lp = self.log_prior(theta)
         if not np.isfinite(lp):
             return -np.inf
@@ -141,6 +302,16 @@ def run_sampler(walkers, logp, log_prob, n_steps, a=2.0):
 
 
 class MCMCfit:
+    """
+    High-level interface for ensemble MCMC parameter estimation.
+
+    This class orchestrates:
+    - posterior evaluation via a ParamEstimator
+    - sampling using an affine-invariant ensemble sampler
+    - basic posterior analysis from MCMC samples
+
+    It does not modify sampler dynamics or adapt proposals.
+    """
     def __init__(self, estimator):
         """
         estimator : ParamEstimator
@@ -152,7 +323,22 @@ class MCMCfit:
         self.samples = None
 
     def sample(self, n_walkers, n_dim, n_steps, a=2.0, init_scale=1e-2):
-        # initialize walkers
+        """
+        Run ensemble MCMC sampling for the defined posterior.
+
+        Parameters
+        ----------
+        n_walkers : int
+            Number of walkers in the ensemble.
+        n_dim : int
+            Dimensionality of parameter space.
+        n_steps : int
+            Number of MCMC steps to run.
+        a : float, optional
+            Stretch scale parameter.
+        init_scale : float, optional
+            Scale of random Gaussian initialization of walkers.
+        """
         walkers = init_scale * np.random.randn(n_walkers, n_dim)
         logp = np.array([
             self.estimator.log_posterior(w) for w in walkers
@@ -168,6 +354,19 @@ class MCMCfit:
         )
 
     def extract_samples(self, burnin=0):
+        """
+        Flatten the ensemble chain into a sample set.
+
+        Parameters
+        ----------
+        burnin : int, optional
+            Number of initial steps to discard.
+
+        Returns
+        -------
+        samples : ndarray, shape (n_samples, n_dim)
+            Flattened posterior samples.
+        """
         if self.chain is None:
             raise RuntimeError("You must run sample() first")
 
@@ -178,17 +377,74 @@ class MCMCfit:
         return self.samples
 
     def mean(self):
+        """
+        Compute the posterior mean of the parameters.
+
+        Returns
+        -------
+        mean : ndarray, shape (n_dim,)
+            Posterior mean estimate.
+        """
         return self.samples.mean(axis=0)
 
     def median(self):
+        """
+        Compute the posterior median of the parameters.
+
+        Returns
+        -------
+        median : ndarray, shape (n_dim,)
+            Posterior median estimate.
+        """
         return np.median(self.samples, axis=0)
 
     def credible_interval(self, level=0.68):
+        """
+        Compute marginal Bayesian credible intervals for each parameter.
+
+        The interval is defined by the central quantiles of the posterior
+        samples and is computed independently for each parameter dimension.
+
+        Parameters
+        ----------
+        level : float, optional
+            Credible interval probability mass. For example, level=0.68
+            returns the 16th and 84th percentiles.
+
+        Returns
+        -------
+        interval : ndarray, shape (2, n_dim)
+            Lower and upper bounds of the credible interval for each
+            parameter.
+
+        Notes
+        -----
+        This method computes marginal (not joint) credible intervals and
+        does not account for parameter correlations.
+        """
         lo = (1 - level) / 2
         hi = 1 - lo
         return np.quantile(self.samples, [lo, hi], axis=0)
 
     def map(self):
+        """
+        Compute the maximum a posteriori (MAP) estimate.
+
+        The MAP estimate is defined as the sampled parameter vector with
+        the highest posterior probability among the extracted samples.
+
+        Returns
+        -------
+        theta_map : ndarray, shape (n_dim,)
+            Parameter vector maximizing the posterior within the sampled
+            set.
+
+        Notes
+        -----
+        This method performs a discrete maximization over the sampled
+        posterior and does not guarantee the global maximum of the
+        posterior distribution.
+        """
         logp = np.array([
             self.estimator.log_posterior(s) for s in self.samples
         ])
