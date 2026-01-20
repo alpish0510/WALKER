@@ -20,6 +20,7 @@ callable log-posterior function.
 import numpy as np
 
 
+
 def z_sample(a=2.0):
     """
     Draw a stretch-move scale factor.
@@ -131,15 +132,17 @@ def ensemble_step(walkers, logp, log_prob, a):
     A = idx[:half]
     B = idx[half:]
 
+    z = z_sample(a)
+    log_z = np.log(z)
     # update A using B
     for i in A:
         j = np.random.choice(B)
-
-        z = z_sample(a)
+        
         proposal = propose_stretch(walkers[i], walkers[j], z)
         logp_new = log_prob(proposal)
 
-        if accept_move(logp[i], logp_new, z, n_dim):
+        log_alpha = (n_dim - 1) * log_z + logp_new - logp[i]
+        if np.log(np.random.rand()) < log_alpha:
             walkers[i] = proposal
             logp[i] = logp_new
 
@@ -151,7 +154,8 @@ def ensemble_step(walkers, logp, log_prob, a):
         proposal = propose_stretch(walkers[i], walkers[j], z)
         logp_new = log_prob(proposal)
 
-        if accept_move(logp[i], logp_new, z, n_dim):
+        log_alpha = (n_dim - 1) * log_z + logp_new - logp[i]
+        if np.log(np.random.rand()) < log_alpha:
             walkers[i] = proposal
             logp[i] = logp_new
 
@@ -271,7 +275,7 @@ class ParamEstimator:
         return lp + self.log_likelihood(theta)
     
 
-def run_sampler(walkers, logp, log_prob, n_steps, a=2.0):
+def run_sampler(walkers, logp, log_prob, n_steps, a=2.0, progress=False):
     """
     Run affine-invariant ensemble sampler.
 
@@ -282,6 +286,8 @@ def run_sampler(walkers, logp, log_prob, n_steps, a=2.0):
     log_prob : callable
     n_steps : int
     a : float
+    progress : bool, optional
+        Whether to display a progress bar.
 
     Returns
     -------
@@ -292,8 +298,15 @@ def run_sampler(walkers, logp, log_prob, n_steps, a=2.0):
 
     chain = np.zeros((n_steps, n_walkers, n_dim))
     logp_chain = np.zeros((n_steps, n_walkers))
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        tqdm = None
 
-    for t in range(n_steps):
+    iterator=range(n_steps)
+    if progress==True and tqdm is not None:
+        iterator=tqdm(iterator, desc="Sampling", unit="step")
+    for t in iterator:
         ensemble_step(walkers, logp, log_prob, a)
         chain[t] = walkers
         logp_chain[t] = logp
@@ -322,7 +335,7 @@ class MCMCfit:
         self.logp_chain = None
         self.samples = None
 
-    def sample(self, n_walkers, n_dim, n_steps, a=2.0, init_scale=1e-2):
+    def sample(self, n_walkers, n_dim, n_steps, a=2.0, init_scale=1e-2, progress=False):
         """
         Run ensemble MCMC sampling for the defined posterior.
 
@@ -338,6 +351,8 @@ class MCMCfit:
             Stretch scale parameter.
         init_scale : float, optional
             Scale of random Gaussian initialization of walkers.
+        progress : bool, optional
+            Whether to display a progress bar.
         """
         walkers = init_scale * np.random.randn(n_walkers, n_dim)
         logp = np.array([
@@ -345,13 +360,24 @@ class MCMCfit:
         ])
 
         # run sampler
-        self.chain, self.logp_chain = run_sampler(
-            walkers,
-            logp,
-            self.estimator.log_posterior,
-            n_steps,
-            a=a
-        )
+        if progress==True:
+            self.chain, self.logp_chain = run_sampler(
+                walkers,
+                logp,
+                self.estimator.log_posterior,
+                n_steps,
+                a=a,
+                progress=True
+            )
+        else:
+            self.chain, self.logp_chain = run_sampler(
+                walkers,
+                logp,
+                self.estimator.log_posterior,
+                n_steps,
+                a=a,
+                progress=False
+            )
 
     def extract_samples(self, burnin=0):
         """
