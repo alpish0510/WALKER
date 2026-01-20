@@ -72,33 +72,6 @@ def propose_stretch(theta_i, theta_j, z):
     """
     return theta_j + z * (theta_i - theta_j)
 
-def accept_move(logp_old, logp_new, z, n_dim): 
-    """
-    Decide whether to accept a stretch-move proposal.
-
-    Acceptance probability follows the affine-invariant rule:
-
-        min(1, z^(n_dim - 1) * exp(logp_new - logp_old))
-
-    Parameters
-    ----------
-    logp_old : float
-        Log-posterior value at the current position.
-    logp_new : float
-        Log-posterior value at the proposed position.
-    z : float
-        Stretch factor used in the proposal.
-    n_dim : int
-        Dimensionality of parameter space.
-
-    Returns
-    -------
-    accept : bool
-        True if the proposal is accepted, False otherwise.
-    """   
-    log_alpha = (n_dim - 1) * np.log(z) + logp_new - logp_old
-    return np.log(np.random.rand()) < log_alpha
-
 
 def ensemble_step(walkers, logp, log_prob, a):
     """
