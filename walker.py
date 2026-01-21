@@ -107,30 +107,43 @@ def ensemble_step(walkers, logp, log_prob, a):
 
     z = z_sample(a)
     log_z = np.log(z)
+
     # update A using B
-    for i in A:
-        j = np.random.choice(B)
-        
-        proposal = propose_stretch(walkers[i], walkers[j], z)
-        logp_new = log_prob(proposal)
+    # freeze complementary ensemble
+    walkers_B = walkers[B].copy()
 
-        log_alpha = (n_dim - 1) * log_z + logp_new - logp[i]
-        if np.log(np.random.rand()) < log_alpha:
-            walkers[i] = proposal
-            logp[i] = logp_new
+    # pair without replacement
+    B_perm = np.random.permutation(len(B))
 
-    # update B using A
-    for i in B:
-        j = np.random.choice(A)
-
+    for ii, jj in zip(A, B_perm):
         z = z_sample(a)
-        proposal = propose_stretch(walkers[i], walkers[j], z)
+        log_z = np.log(z)
+
+        proposal = propose_stretch(walkers[ii], walkers_B[jj], z)
         logp_new = log_prob(proposal)
 
-        log_alpha = (n_dim - 1) * log_z + logp_new - logp[i]
+        log_alpha = (n_dim - 1) * log_z + logp_new - logp[ii]
         if np.log(np.random.rand()) < log_alpha:
-            walkers[i] = proposal
-            logp[i] = logp_new
+            walkers[ii] = proposal
+            logp[ii] = logp_new
+
+    # freeze complementary ensemble
+    walkers_B = walkers[B].copy()
+
+    # pair without replacement
+    B_perm = np.random.permutation(len(B))
+
+    for ii, jj in zip(A, B_perm):
+        z = z_sample(a)
+        log_z = np.log(z)
+
+        proposal = propose_stretch(walkers[ii], walkers_B[jj], z)
+        logp_new = log_prob(proposal)
+
+        log_alpha = (n_dim - 1) * log_z + logp_new - logp[ii]
+        if np.log(np.random.rand()) < log_alpha:
+            walkers[ii] = proposal
+            logp[ii] = logp_new
 
 
 def run_sampler(walkers, logp, log_prob, n_steps, a=2.0):
@@ -181,41 +194,43 @@ def run_sampler(walkers, logp, log_prob, n_steps, a=2.0):
 
 class ParamEstimator:
     """
-    Bayesian parameter estimation problem definition.
+    Bundle data, model, prior, and parameter transform into a log-posterior callable.
 
-    This class encapsulates:
-    - observed data
-    - a forward model
-    - a prior distribution
-    - likelihood and posterior evaluation
+    This class evaluates the posterior in a transformed (internal) parameter space
+    using a user-supplied `Transform`. The sampler operates on the internal
+    parameters `u`, which are mapped to physical parameters `theta`.
 
-    It is agnostic to the sampling algorithm used to explore the
-    posterior.
+    Parameters
+    ----------
+    x, y : array_like
+        Observed data.
+    yerr : array_like
+        1σ observational uncertainties for `y` (same shape as `y`).
+    model : callable
+        Model function `f(x, theta)` returning predicted y.
+    log_prior : callable
+        Log prior `log p(theta)` in physical parameter space.
+    transform : Transform
+        Mapping between internal parameters `u` and physical parameters `theta`.
+
+    Methods
+    -------
+    log_likelihood(theta)
+        Gaussian log-likelihood in physical parameter space.
+    log_posterior(u)
+        Log posterior in internal space, including Jacobian correction.
     """
-    def __init__(self, x, y, yerr, model, log_prior):
+
+    def __init__(self, x, y, yerr, model, log_prior, transform):
         self.x = np.asarray(x)
         self.y = np.asarray(y)
         self.yerr = np.asarray(yerr)
 
-        self.model = model          # f(x, theta)
-        self.log_prior = log_prior  # log p(theta)
+        self.model = model              # f(x, theta)
+        self.log_prior = log_prior      # log p(theta)
+        self.transform = transform      # Transform instance
 
     def log_likelihood(self, theta):
-        """
-        Compute the log-likelihood of the data given model parameters.
-
-        Assumes independent Gaussian observational uncertainties.
-
-        Parameters
-        ----------
-        theta : ndarray, shape (n_dim,)
-            Model parameters.
-
-        Returns
-        -------
-        log_like : float
-            Log-likelihood log p(y | theta).
-        """
         y_model = self.model(self.x, theta)
         resid = self.y - y_model
 
@@ -224,28 +239,23 @@ class ParamEstimator:
             + np.log(2 * np.pi * self.yerr ** 2)
         )
 
-    def log_posterior(self, theta):
-        """
-        Compute the log-posterior probability of model parameters.
+    def log_posterior(self, u):
+        # 1. Transform internal → physical
+        theta = self.transform.forward(u)
 
-        Combines the user-defined prior with the Gaussian likelihood.
-
-        Parameters
-        ----------
-        theta : ndarray, shape (n_dim,)
-            Model parameters.
-
-        Returns
-        -------
-        log_post : float
-            Log-posterior log p(theta | y).
-            Returns -inf for invalid prior values.
-        """
+        # 2. Prior in physical space
         lp = self.log_prior(theta)
         if not np.isfinite(lp):
             return -np.inf
 
-        return lp + self.log_likelihood(theta)
+        # 3. Likelihood in physical space
+        ll = self.log_likelihood(theta)
+
+        # 4. Jacobian correction
+        lj = self.transform.log_jacobian(u)
+
+        return lp + ll + lj
+
     
 
 def run_sampler(walkers, logp, log_prob, n_steps, a=2.0, progress=False):
@@ -308,7 +318,7 @@ class MCMCfit:
         self.logp_chain = None
         self.samples = None
 
-    def sample(self, n_walkers, n_dim, n_steps, a=2.0, init_scale=1e-2, progress=False):
+    def sample(self, n_walkers, n_steps, a=2.0, init_scale=1e-2, progress=False):
         """
         Run ensemble MCMC sampling for the defined posterior.
 
@@ -316,50 +326,59 @@ class MCMCfit:
         ----------
         n_walkers : int
             Number of walkers in the ensemble.
-        n_dim : int
-            Dimensionality of parameter space.
         n_steps : int
             Number of MCMC steps to run.
         a : float, optional
             Stretch scale parameter.
         init_scale : float, optional
-            Scale of random Gaussian initialization of walkers.
+            Scale of random Gaussian initialization of walkers
+            in internal (unconstrained) parameter space.
         progress : bool, optional
             Whether to display a progress bar.
         """
+
+        # infer dimensionality from transform
+        n_dim = len(self.estimator.transform.transforms)
+
+        # initialize walkers in internal space
         walkers = init_scale * np.random.randn(n_walkers, n_dim)
+
+        # evaluate initial log posterior
         logp = np.array([
             self.estimator.log_posterior(w) for w in walkers
         ])
 
-        # run sampler
-        if progress==True:
-            self.chain, self.logp_chain = run_sampler(
-                walkers,
-                logp,
-                self.estimator.log_posterior,
-                n_steps,
-                a=a,
-                progress=True
-            )
-        else:
-            self.chain, self.logp_chain = run_sampler(
-                walkers,
-                logp,
-                self.estimator.log_posterior,
-                n_steps,
-                a=a,
-                progress=False
+        # sanity check
+        if not np.any(np.isfinite(logp)):
+            raise RuntimeError(
+                "All initial walkers have non-finite log posterior. "
+                "Increase init_scale or check priors."
             )
 
-    def extract_samples(self, burnin=0):
+        # run sampler
+        self.chain, self.logp_chain = run_sampler(
+            walkers,
+            logp,
+            self.estimator.log_posterior,
+            n_steps,
+            a=a,
+            progress=progress
+        )
+
+
+    def _extract_samples(self, burnin=0, thin=1, physical=False):
         """
-        Flatten the ensemble chain into a sample set.
+        Extract flattened posterior samples.
 
         Parameters
         ----------
-        burnin : int, optional
+        burnin : int
             Number of initial steps to discard.
+        thin : int
+            Thinning factor.
+        physical : bool
+            If True, return samples in physical parameter space.
+            If False, return internal (unconstrained) samples.
 
         Returns
         -------
@@ -369,82 +388,198 @@ class MCMCfit:
         if self.chain is None:
             raise RuntimeError("You must run sample() first")
 
-        samples = self.chain[burnin:]
-        n_steps, n_walkers, n_dim = samples.shape
+        chain = self.chain[burnin::thin]
+        u_samples = chain.reshape(-1, chain.shape[-1])
 
-        self.samples = samples.reshape(n_steps * n_walkers, n_dim)
-        return self.samples
+        if not physical:
+            return u_samples
 
-    def mean(self):
+        return np.array([
+            self.estimator.transform.forward(u)
+            for u in u_samples
+        ])
+
+
+    def mean(self, burnin=0, thin=1):
         """
-        Compute the posterior mean of the parameters.
-
-        Returns
-        -------
-        mean : ndarray, shape (n_dim,)
-            Posterior mean estimate.
-        """
-        return self.samples.mean(axis=0)
-
-    def median(self):
-        """
-        Compute the posterior median of the parameters.
-
-        Returns
-        -------
-        median : ndarray, shape (n_dim,)
-            Posterior median estimate.
-        """
-        return np.median(self.samples, axis=0)
-
-    def credible_interval(self, level=0.68):
-        """
-        Compute marginal Bayesian credible intervals for each parameter.
-
-        The interval is defined by the central quantiles of the posterior
-        samples and is computed independently for each parameter dimension.
+        Posterior mean of parameters in physical space.
 
         Parameters
         ----------
-        level : float, optional
-            Credible interval probability mass. For example, level=0.68
-            returns the 16th and 84th percentiles.
+        burnin : int
+            Burn-in steps to discard.
+        thin : int
+            Thinning factor.
+        physical : bool
+            If True, return samples in physical parameter space.
+            If False, return internal (log) samples.
+        
+        Returns
+        -------
+        mean : ndarray, shape (n_dim,)
+            Posterior mean of each parameter.
+        """
+        theta = self._extract_samples(burnin, thin, physical=True)
+        return theta.mean(axis=0)
+
+
+    def median(self, burnin=0, thin=1):
+        """
+        Posterior median of parameters in physical space.
+
+        Parameters
+        ----------
+        burnin : int
+            Burn-in steps to discard.
+        thin : int
+            Thinning factor.
+        physical : bool
+            If True, return samples in physical parameter space.
+            If False, return internal (log) samples.
+        
+        Returns
+        -------
+        median : ndarray, shape (n_dim,)
+            Posterior median of each parameter.
+        """
+        theta = self._extract_samples(burnin, thin, physical=True)
+        return np.median(theta, axis=0)
+
+
+    def credible_interval(self, level=0.68, burnin=0, thin=1):
+        """
+        Credible interval for each parameter in physical space.
+
+        Parameters
+        ----------
+        level : float
+            Credible level (e.g. 0.68 or 0.95).
+        burnin : int
+            Burn-in steps to discard.
+        thin : int
+            Thinning factor.
 
         Returns
         -------
-        interval : ndarray, shape (2, n_dim)
-            Lower and upper bounds of the credible interval for each
-            parameter.
-
-        Notes
-        -----
-        This method computes marginal (not joint) credible intervals and
-        does not account for parameter correlations.
+        intervals : list of tuples
+            [(low, high), ...] for each parameter.
         """
-        lo = (1 - level) / 2
-        hi = 1 - lo
-        return np.quantile(self.samples, [lo, hi], axis=0)
+        theta = self._extract_samples(burnin, thin, physical=True)
 
-    def map(self):
+        alpha = (1.0 - level) / 2.0
+        lo = np.percentile(theta, 100 * alpha, axis=0)
+        hi = np.percentile(theta, 100 * (1 - alpha), axis=0)
+
+        return list(zip(lo, hi))
+
+
+    def map(self, burnin=0):
         """
-        Compute the maximum a posteriori (MAP) estimate.
+        Maximum a posteriori estimate in physical space.
 
-        The MAP estimate is defined as the sampled parameter vector with
-        the highest posterior probability among the extracted samples.
-
+        Parameters
+        ----------
+        burnin : int
+            Burn-in steps to discard.
+        
         Returns
         -------
-        theta_map : ndarray, shape (n_dim,)
-            Parameter vector maximizing the posterior within the sampled
-            set.
-
-        Notes
-        -----
-        This method performs a discrete maximization over the sampled
-        posterior and does not guarantee the global maximum of the
-        posterior distribution.
+        map_estimate : ndarray, shape (n_dim,)
+            MAP estimate of each parameter. 
         """
-        logp = np.array([
-            self.estimator.log_posterior(s) for s in self.samples
+        logp = self.logp_chain[burnin:].reshape(-1)
+        idx = np.argmax(logp)
+
+        u_map = self.chain[burnin:].reshape(-1, self.chain.shape[-1])[idx]
+        return self.estimator.transform.forward(u_map)
+
+
+class Transform:
+    """
+    Base class for parameter transforms between internal and physical space.
+
+    Subclasses must implement:
+    - `forward(u)`: map internal parameters to physical parameters.
+    - `log_jacobian(u)`: log absolute Jacobian determinant of the transform.
+    """
+    def forward(self, u):
+        """Map internal parameters `u` → physical parameters `θ`."""
+        raise NotImplementedError
+
+    def log_jacobian(self, u):
+        """Return log |dθ/du| for the transform."""
+        raise NotImplementedError
+
+
+class Identity(Transform):
+    """
+    Identity transform: θ = u.
+
+    Useful when parameters are already unconstrained.
+    """
+    def forward(self, u):
+        return u
+
+    def log_jacobian(self, u):
+        return 0.0
+
+
+class Log(Transform):
+    """
+    Log transform: θ = exp(u), for strictly positive parameters.
+
+    The Jacobian is |dθ/du| = exp(u), so log|dθ/du| = u.
+    """
+    def forward(self, u):
+        return np.exp(u)
+
+    def log_jacobian(self, u):
+        return u
+
+
+class Logit(Transform):
+    """
+    Logit transform mapping u ∈ (-∞, ∞) to θ ∈ [a, b].
+
+    Parameters
+    ----------
+    a, b : float
+        Lower and upper bounds of the target interval.
+    """
+    def __init__(self, a, b):
+        self.a = a
+        self.b = b
+
+    def forward(self, u):
+        s = 1.0 / (1.0 + np.exp(-u))
+        return self.a + (self.b - self.a) * s
+
+    def log_jacobian(self, u):
+        return (
+            np.log(self.b - self.a)
+            - u
+            - 2.0 * np.log1p(np.exp(-u))
+        )
+
+
+class CompositeTransform(Transform):
+    """
+    Apply a list of transforms component-wise to a parameter vector.
+
+    Parameters
+    ----------
+    transforms : sequence of Transform
+        One transform per parameter dimension.
+    """
+    def __init__(self, transforms):
+        self.transforms = transforms
+
+    def forward(self, u):
+        return np.array([
+            t.forward(ui) for t, ui in zip(self.transforms, u)
         ])
-        return self.samples[np.argmax(logp)]
+
+    def log_jacobian(self, u):
+        return sum(
+            t.log_jacobian(ui) for t, ui in zip(self.transforms, u)
+        )
