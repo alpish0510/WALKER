@@ -1,0 +1,10 @@
+LICENSE
+README.md
+pyproject.toml
+src/walker/__init__.py
+src/walker/walker.py
+src/walker.egg-info/PKG-INFO
+src/walker.egg-info/SOURCES.txt
+src/walker.egg-info/dependency_links.txt
+src/walker.egg-info/requires.txt
+src/walker.egg-info/top_level.txt
