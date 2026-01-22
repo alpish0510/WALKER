@@ -50,7 +50,10 @@ def log_prior(theta):
     return 0.0 if (-10 < m < 10 and -10 < b < 10) else -np.inf
 
 # Identity transform for unconstrained params
-transform = wk.Identity()
+transform = wk.CompositeTransform([
+    wk.Identity(),
+    wk.Identity()
+])
 
 x = np.linspace(0, 10, 50)
 yerr = 0.2 * np.ones_like(x)
