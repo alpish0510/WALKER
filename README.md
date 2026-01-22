@@ -3,10 +3,14 @@
 WALKER is a minimal affine‑invariant ensemble MCMC sampler using stretch moves, plus a lightweight Bayesian parameter‑estimation wrapper. It keeps state explicit (walkers + logp), avoids adaptive heuristics, and separates posterior definition from sampling.
 
 ## Features
-- Affine‑invariant stretch move sampler
-- Explicit `Transform` framework for constrained parameters
-- Simple `ParamEstimator` + `MCMCfit` interface
+- Affine‑invariant stretch‑move ensemble sampler
+- Explicit walker state and log‑posterior bookkeeping
+- `ParamEstimator` wrapper for likelihood + prior + transform
+- Transform system for constrained parameters: `Identity`, `Log`, `Logit`, `CompositeTransform`
+- Internal‑space sampling with Jacobian corrections for valid posteriors
+- Lightweight `MCMCfit` interface: `sample()`, `mean()`, `median()`, `map()`, `credible_interval()`
 - Optional progress bar via `tqdm`
+- Designed for clarity and extensibility over black‑box automation
 
 ## Installation
 From the repo root:
