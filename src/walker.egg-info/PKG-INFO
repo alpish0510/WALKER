@@ -1,4 +1,4 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.4
 Name: walker
 Version: 0.1.0
 Summary: Minimal affine-invariant ensemble MCMC sampler with transforms and a lightweight Bayesian interface.
@@ -29,24 +29,51 @@ Requires-Python: >=3.8
 Description-Content-Type: text/markdown
 License-File: LICENSE
 Requires-Dist: numpy>=1.20
+Requires-Dist: tqdm>=4.0
 Provides-Extra: progress
 Requires-Dist: tqdm>=4.0; extra == "progress"
 Provides-Extra: plots
 Requires-Dist: matplotlib>=3.5; extra == "plots"
 Requires-Dist: getdist>=1.3; extra == "plots"
+Dynamic: license-file
 
-# WALKER: Weighted Affine Likelihood Kernel for Ensemble Randomization
+# WALKER — Weighted Affine Likelihood Kernel for Ensemble Randomization
 
-WALKER is a minimal affine‑invariant ensemble MCMC sampler using stretch moves, plus a lightweight Bayesian parameter‑estimation wrapper. It keeps state explicit (walkers + logp), avoids adaptive heuristics, and separates posterior definition from sampling.
+*A minimal, affine-invariant ensemble MCMC sampler with explicit state and transform-aware parameter estimation.*
+
+WALKER is a lightweight affine-invariant ensemble MCMC sampler using stretch moves, with a small Bayesian parameter-estimation wrapper. It is designed for users who want explicit control over walker state and log-posterior evaluation, without adaptive heuristics, hidden tuning, or black-box automation.
+
+Sampling, posterior definition, and diagnostics are kept deliberately separate.
+
+---
 
 ## Features
-- Affine‑invariant stretch move sampler
-- Explicit `Transform` framework for constrained parameters
-- Simple `ParamEstimator` + `MCMCfit` interface
-- Optional progress bar via `tqdm`
+
+- Affine-invariant stretch-move ensemble sampler  
+- Explicit walker state and log-posterior bookkeeping  
+- Clear separation between posterior definition, sampling, and diagnostics  
+- Transform-aware constrained parameter sampling with exact Jacobian corrections  
+- `ParamEstimator` wrapper for model + likelihood + prior + transform  
+- Lightweight `MCMCfit` interface for common summaries  
+- Optional progress bar via `tqdm`  
+- Designed for clarity and extensibility over automation  
+
+---
 
 ## Installation
-Clone or copy the module into your project.
+
+### Install from GitHub
+```bash
+pip install git+https://github.com/USERNAME/WALKER.git
+cd WALKER
+pip install .
+```
+
+### Editable install for development:
+
+```bash
+pip install -e .
+```
 
 ## Quick start
 ```python
@@ -62,7 +89,10 @@ def log_prior(theta):
     return 0.0 if (-10 < m < 10 and -10 < b < 10) else -np.inf
 
 # Identity transform for unconstrained params
-transform = wk.Identity()
+transform = wk.CompositeTransform([
+    wk.Identity(),
+    wk.Identity()
+])
 
 x = np.linspace(0, 10, 50)
 yerr = 0.2 * np.ones_like(x)
@@ -83,8 +113,11 @@ print("Median:", fit.median(burnin=1000))
 print("MAP:", fit.map(burnin=1000))
 ```
 
-## Transforms
-Use transforms to enforce constraints:
+## Transforms and constrained parameters
+WALKER samples in an unconstrained internal parameter space.
+Transforms map internal parameters to physical space, and exact Jacobian corrections are applied automatically to ensure valid posteriors.
+
+Available transforms:
 - `Identity` → unconstrained parameters
 - `Log` → strictly positive parameters
 - `Logit(a, b)` → parameters bounded to $[a,b]$
@@ -98,6 +131,10 @@ transform = wk.CompositeTransform([
     wk.Identity()  # unconstrained
 ])
 ```
+## API overview
+`EnsembleSampler` — affine-invariant ensemble sampler core
+`ParamEstimator` — combines model, likelihood, prior, and transform
+`MCMCfit` — convenience interface for sampling and posterior summaries
 
 ## Module
 - [walker.py](walker.py)
