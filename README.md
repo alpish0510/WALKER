@@ -9,7 +9,17 @@ WALKER is a minimal affine‑invariant ensemble MCMC sampler using stretch moves
 - Optional progress bar via `tqdm`
 
 ## Installation
-Clone or copy the module into your project.
+From the repo root:
+
+```bash
+pip install .
+```
+
+Editable install for development:
+
+```bash
+pip install -e .
+```
 
 ## Quick start
 ```python
